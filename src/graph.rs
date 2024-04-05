@@ -1,4 +1,5 @@
 use egui::{containers::*, widgets::*, *};
+use rand::prelude::*;
 
 #[derive(PartialEq)]
 pub struct Graph {
@@ -8,45 +9,40 @@ pub struct Graph {
     bounds: f32,
     attraction: f32,
     repulsion: f32,
-    dampening: f32,
-    nodes: [Node; 6],
-    adjacency_matrix: [[bool; 6]; 6],
+    velocity: f32,
+    nodes: Vec<Node>,
+    adjacency_matrix: Vec<Vec<bool>>,
+}
+
+impl Graph {
+    pub fn new(adj_mtx: Vec<Vec<bool>>) -> Self {
+        let mut nodes: Vec<Node> = Vec::new();
+
+        for i in 0..adj_mtx[0].len() {
+            let mut rng = rand::thread_rng();
+            let random_x: f32 = rng.gen_range(0.0..1.0);
+            let random_y: f32 = rng.gen_range(0.0..1.0);
+            nodes.push(Node::new(i, random_x, random_y));
+        }
+
+        let def = Self {
+            paused: false,
+            time: 0.0,
+            zoom: 0.01,
+            bounds: 1.0,
+            attraction: 1.0,
+            repulsion: 1.0,
+            velocity: 1.0,
+            nodes: nodes,
+            adjacency_matrix: adj_mtx,
+        };
+
+        return def;
+    }
 }
 
 impl Default for Graph {
     fn default() -> Self {
-        // Nodes
-        let node0 = Node::new(-1.1, 1.0);
-        let node1 = Node::new(-1.0, 1.0);
-        let node2 = Node::new(1.0, -1.0);
-        let node3 = Node::new(-1.0, -1.0);
-        let node4 = Node::new(1.3, -1.8);
-        let node5 = Node::new(-0.01, -1.9);
-
-        let mut nodes: [Node; 6] = [node0, node1, node2, node3, node4, node5];
-
-        let mut adjacency_matrix: [[bool; 6]; 6] = [[false; 6]; 6];
-        adjacency_matrix[0][1] = true;
-        adjacency_matrix[1][0] = true;
-
-        adjacency_matrix[1][2] = true;
-        adjacency_matrix[2][1] = true;
-
-        adjacency_matrix[2][3] = true;
-        adjacency_matrix[3][2] = true;
-
-        adjacency_matrix[3][4] = true;
-        adjacency_matrix[4][3] = true;
-
-        adjacency_matrix[4][5] = true;
-        adjacency_matrix[5][4] = true;
-
-        adjacency_matrix[5][0] = true;
-        adjacency_matrix[0][5] = true;
-
-        adjacency_matrix[5][3] = true;
-        adjacency_matrix[3][5] = true;
-
         Self {
             paused: false,
             time: 0.0,
@@ -54,15 +50,16 @@ impl Default for Graph {
             bounds: 1.0,
             attraction: 1.0,
             repulsion: 1.0,
-            dampening: 1.0,
-            nodes,
-            adjacency_matrix,
+            velocity: 1.0,
+            nodes: Vec::new(),
+            adjacency_matrix: Vec::new(),
         }
     }
 }
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct Node {
+    idx: usize,
     x: f32,
     y: f32,
     force_x: f32,
@@ -72,8 +69,9 @@ pub struct Node {
 }
 
 impl Node {
-    fn new(x: f32, y: f32) -> Self {
+    fn new(name: usize, x: f32, y: f32) -> Self {
         Self {
+            idx: name,
             x,
             y,
             force_x: 0.0,
@@ -124,11 +122,11 @@ impl Graph {
         };
 
         ui.checkbox(&mut self.paused, "Paused");
-        ui.add(Slider::new(&mut self.zoom, 0.0..=0.02).text("Zoom"));
-        ui.add(Slider::new(&mut self.attraction, -1.0..=5.0).text("Attraction"));
-        ui.add(Slider::new(&mut self.repulsion, -1.0..=5.0).text("Repulsion"));
-        ui.add(Slider::new(&mut self.bounds, -1.0..=5.0).text("Bounds strength"));
-        ui.add(Slider::new(&mut self.dampening, -1.0..=5.0).text("dampening"));
+        ui.add(Slider::new(&mut self.zoom, 0.0..=0.05).text("Zoom"));
+        ui.add(Slider::new(&mut self.attraction, -1.0..=10.0).text("Attraction"));
+        ui.add(Slider::new(&mut self.repulsion, -1.0..=10.0).text("Repulsion"));
+        ui.add(Slider::new(&mut self.bounds, -1.0..=10.0).text("Bounds strength"));
+        ui.add(Slider::new(&mut self.velocity, -1.0..=10.0).text("velocity"));
     }
 
     fn paint(&mut self, ui: &mut Ui, painter: &Painter) {
@@ -150,32 +148,33 @@ impl Graph {
                 }
             };
 
-        let paint_circle = |points: Pos2, color: Color32, width: f32, shapes: &mut Vec<Shape>| {
-            let point = to_screen * points;
-            let radius = 10.0;
-            let top_left: Pos2 = Pos2::new(point.x - radius, point.y - radius);
-            let bottom_right: Pos2 = Pos2::new(point.x + radius, point.y + radius);
-            // culling
-            if rect.intersects(Rect::from_min_max(top_left, bottom_right)) {
-                shapes.push(Shape::circle_filled(point, radius, color));
+        let paint_circle =
+            |idx: usize, points: Pos2, color: Color32, width: f32, shapes: &mut Vec<Shape>| {
+                let point = to_screen * points;
+                let radius = 10.0;
+                let top_left: Pos2 = Pos2::new(point.x - radius, point.y - radius);
+                let bottom_right: Pos2 = Pos2::new(point.x + radius, point.y + radius);
+                // culling
+                if rect.intersects(Rect::from_min_max(top_left, bottom_right)) {
+                    shapes.push(Shape::circle_filled(point, radius, color));
 
-                // Add text overlay with x and y coordinates
-                let text = format!("({}, {})", points.x, points.y);
-                let text_position = point + Vec2::new(radius, -radius);
-                let text_color = Color32::GRAY;
+                    // Add text overlay with x and y coordinates
+                    let text = format!("(#{} {}, {})", idx, points.x, points.y);
+                    let text_position = point + Vec2::new(radius, -radius);
+                    let text_color = Color32::GRAY;
 
-                shapes.push(ui.fonts(|f| {
-                    Shape::text(
-                        f,
-                        text_position,
-                        egui::Align2::LEFT_BOTTOM,
-                        text,
-                        TextStyle::Monospace.resolve(ui.style()),
-                        color,
-                    )
-                }));
-            }
-        };
+                    shapes.push(ui.fonts(|f| {
+                        Shape::text(
+                            f,
+                            text_position,
+                            egui::Align2::LEFT_BOTTOM,
+                            text,
+                            TextStyle::Monospace.resolve(ui.style()),
+                            color,
+                        )
+                    }));
+                }
+            };
 
         // Algorithm
         for i in 0..self.nodes.len() {
@@ -183,6 +182,15 @@ impl Graph {
 
             v.force_x = 0.0;
             v.force_y = 0.0;
+
+            // Attract
+            for j in 0..self.nodes.len() {
+                if (self.adjacency_matrix[i][j]) {
+                    let u: &Node = &self.nodes[j];
+                    v.force_x += 5.0 * self.attraction * (u.x - v.x);
+                    v.force_y += 5.0 * self.attraction * (u.y - v.y);
+                }
+            }
 
             // Push away from other nodes
             for j in 0..self.nodes.len() {
@@ -199,32 +207,41 @@ impl Graph {
             }
 
             // Push away from corners
-            for point in [100.0, -100.0]
-            {
+            for point in [10000.0, -10000.0] {
                 let rsq_x: f32 = 0.25 * f32::powf((v.x - point), 2.0);
                 let rsq_y: f32 = 0.25 * f32::powf((v.y - point), 2.0);
-                v.force_x += 1000.0 * self.bounds * ((v.x - point) / rsq_x);
-                v.force_y += 1000.0 * self.bounds * ((v.y - point) / rsq_y);
+                v.force_x += 10000000.0 * self.bounds * ((v.x - point) / rsq_x);
+                v.force_y += 10000000.0 * self.bounds * ((v.y - point) / rsq_y);
             }
 
-            // Attract
-            for j in 0..self.nodes.len() {
-                if (self.adjacency_matrix[i][j]) {
-                    let u: &Node = &self.nodes[j];
-                    v.force_x += 5.0 * (u.x - v.x);
-                    v.force_y += 5.0 * self.attraction * (u.y - v.y);
-                }
-            }
-
-            v.velocity_x = (v.velocity_x + v.force_x) * 0.01 * self.dampening;
-            v.velocity_y = (v.velocity_y + v.force_y) * 0.01 * self.dampening;
+            v.velocity_x = (v.velocity_x + v.force_x) * 0.01 * self.velocity;
+            v.velocity_y = (v.velocity_y + v.force_y) * 0.01 * self.velocity;
             self.nodes[i] = v;
         }
 
         for x in 0..self.nodes.len() {
-            let mut v = self.nodes[x];
+            let mut v: Node = self.nodes[x];
+            if v.velocity_x.is_nan()
+                || v.velocity_y.is_nan()
+                || v.velocity_x.abs() > 100.0
+                || v.velocity_y.abs() > 100.0
+            {
+                // Just give a random velocity between 0 and 1;
+                let mut rng = rand::thread_rng();
+                v.velocity_x = rng.gen_range(-1.0..1.0);
+                v.velocity_y = rng.gen_range(-1.0..1.0);
+            }
             v.x = v.x + v.velocity_x;
             v.y = v.y + v.velocity_y;
+
+            if v.x.abs() > 1000.0 {
+                v.x = if v.x.is_sign_negative() { 1000.0 } else { -1000.0 };
+            }
+
+            if v.y.abs() > 1000.0 {
+                v.y = if v.y.is_sign_negative() { 1000.0 } else { -1000.0 };
+            }
+
             self.nodes[x] = v;
         }
 
@@ -238,7 +255,7 @@ impl Graph {
                             Pos2::new(self.nodes[i].x, self.nodes[i].y),
                             Pos2::new(self.nodes[j].x, self.nodes[j].y),
                         ],
-                        Color32::from_additive_luminance(255),
+                        Color32::from_additive_luminance(128),
                         10.0,
                         &mut shapes,
                     );
@@ -247,9 +264,10 @@ impl Graph {
         }
 
         // - Nodes
-        for node in 0..self.nodes.len() {
+        for node in &self.nodes {
             paint_circle(
-                Pos2::new(self.nodes[node].x, self.nodes[node].y),
+                node.idx,
+                Pos2::new(node.x, node.y),
                 Color32::from_additive_luminance(255),
                 2.0,
                 &mut shapes,
